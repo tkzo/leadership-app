@@ -1,5 +1,6 @@
 import { Resend } from "resend";
-import { RESEND_API_KEY, BASE_URL } from "$env/static/private";
+import { RESEND_API_KEY } from "$env/static/private";
+import { base } from "$app/paths";
 
 const resend = new Resend(RESEND_API_KEY);
 
@@ -7,7 +8,7 @@ const resend = new Resend(RESEND_API_KEY);
 const FROM_EMAIL = "Leadership App <onboarding@nigiri.digital>";
 
 export async function sendVerificationEmail(email: string, token: string): Promise<void> {
-  const verificationUrl = `${BASE_URL}/verify-email?token=${token}`;
+  const verificationUrl = `${base}/verify-email?token=${token}`;
 
   await resend.emails.send({
     from: FROM_EMAIL,
@@ -25,7 +26,7 @@ export async function sendVerificationEmail(email: string, token: string): Promi
 }
 
 export async function sendPasswordResetEmail(email: string, token: string): Promise<void> {
-  const resetUrl = `${BASE_URL}/reset-password?token=${token}`;
+  const resetUrl = `${base}/reset-password?token=${token}`;
 
   await resend.emails.send({
     from: FROM_EMAIL,

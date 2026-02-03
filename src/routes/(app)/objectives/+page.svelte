@@ -263,10 +263,9 @@
 						{/if}
 					</td>
 					<td class="shared-cell">
-						{@const filteredOrphanShares = filterSharedWith(rci.sharedWith)}
-						{#if filteredOrphanShares.length > 0}
+						{#if filterSharedWith(rci.sharedWith).length > 0}
 							<ul class="shared-list">
-								{#each filteredOrphanShares as share}
+								{#each filterSharedWith(rci.sharedWith) as share}
 									<li>
 										<span class="shared-name">{share.to_user_name}</span>
 										{#if share.to_user_title}
