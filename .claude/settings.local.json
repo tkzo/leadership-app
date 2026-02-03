@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm create:*)",
+      "Bash(npx sv create . --template=minimal --types=ts --no-add-ons --no-install)",
+      "Bash(npm install)",
+      "Bash(npm install:*)",
+      "Bash(npm run check:*)"
+    ]
+  }
+}
