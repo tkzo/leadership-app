@@ -11,7 +11,7 @@
 		<nav>
 			<a href="/">Dashboard</a>
 			<a href="/objectives">My Objectives</a>
-			<a href="/shared">Shared with Me</a>
+			<a href="/shared">Approval Requests</a>
 			<a href="/org">Organization</a>
 			{#if data.hasReportees}
 				<a href="/team">Team Objectives</a>

@@ -6,21 +6,22 @@ import {
 	updateRecipientAccepted,
 	getSharedBigRockWithObjective
 } from '$lib/db/queries/shared-big-rocks';
-import { createObjective, getObjectivesByOwnerAndType } from '$lib/db/queries/objectives';
+import {
+	createObjective,
+	getObjectivesByOwnerAndType,
+	getObjectiveById,
+	approveObjective,
+	rejectObjective
+} from '$lib/db/queries/objectives';
+import { getUsersByManager } from '$lib/db/queries/users';
 
-export const load: PageServerLoad = async ({ locals }) => {
-	const incomingShares = await getIncomingSharedBigRocks(locals.user!.uid);
-	const myBigRocks = await getObjectivesByOwnerAndType(locals.user!.uid, 'big_rock');
+function groupShares<T extends { objective_type: string; objective_id: string; objective_parent_id: string | null }>(
+	shares: T[]
+): { grouped: Array<{ bigRock: T; rcis: T[] }>; orphanRcis: T[] } {
+	const bigRocks = shares.filter((s) => s.objective_type === 'big_rock');
+	const rcis = shares.filter((s) => s.objective_type === 'risk_critical_initiative');
 
-	// Group shares: Big Rocks with their child RCIs
-	const bigRocks = incomingShares.filter((s) => s.objective_type === 'big_rock');
-	const rcis = incomingShares.filter((s) => s.objective_type === 'risk_critical_initiative');
-
-	// Create a map of Big Rock objective_id to its share data
-	const bigRockMap = new Map(bigRocks.map((br) => [br.objective_id, br]));
-
-	// Group RCIs by their parent Big Rock
-	const rcisByParent = new Map<string | null, typeof rcis>();
+	const rcisByParent = new Map<string | null, T[]>();
 	for (const rci of rcis) {
 		const parentId = rci.objective_parent_id;
 		if (!rcisByParent.has(parentId)) {
@@ -29,27 +30,44 @@ export const load: PageServerLoad = async ({ locals }) => {
 		rcisByParent.get(parentId)!.push(rci);
 	}
 
-	// Build grouped data structure
-	type ShareType = typeof incomingShares[0];
-	const groupedShares: Array<{
-		bigRock: ShareType;
-		rcis: ShareType[];
-	}> = [];
-
-	// Add Big Rocks with their child RCIs
+	const grouped: Array<{ bigRock: T; rcis: T[] }> = [];
 	for (const br of bigRocks) {
-		groupedShares.push({
+		grouped.push({
 			bigRock: br,
 			rcis: rcisByParent.get(br.objective_id) || []
 		});
-		// Remove from rcisByParent so we don't show them again
 		rcisByParent.delete(br.objective_id);
 	}
 
-	// Orphan RCIs (parent Big Rock not in the shared list)
 	const orphanRcis = Array.from(rcisByParent.values()).flat();
+	return { grouped, orphanRcis };
+}
 
-	return { incomingShares, groupedShares, orphanRcis, myBigRocks };
+export const load: PageServerLoad = async ({ locals }) => {
+	const user = locals.user!;
+	const incomingShares = await getIncomingSharedBigRocks(user.uid);
+	const myBigRocks = await getObjectivesByOwnerAndType(user.uid, 'big_rock');
+	const directReports = await getUsersByManager(user.uid);
+	const directReportIds = new Set(directReports.map((r) => r.uid));
+
+	// Separate: cascaded up from reports (for approval), cascaded down from manager (excluded), and peer shares
+	const cascadedUpShares = incomingShares.filter((s) => directReportIds.has(s.from_user_id));
+	const regularShares = incomingShares.filter(
+		(s) => !directReportIds.has(s.from_user_id) && s.from_user_id !== user.manager_id
+	);
+
+	const { grouped: groupedShares, orphanRcis } = groupShares(regularShares);
+	const { grouped: groupedCascadedUp, orphanRcis: cascadedUpOrphanRcis } =
+		groupShares(cascadedUpShares);
+
+	return {
+		incomingShares: regularShares,
+		groupedShares,
+		orphanRcis,
+		myBigRocks,
+		groupedCascadedUp,
+		cascadedUpOrphanRcis
+	};
 };
 
 export const actions: Actions = {
@@ -120,5 +138,153 @@ export const actions: Actions = {
 
 		await updateRecipientAccepted(recipientId, false);
 		return { ignored: true };
+	},
+
+	approve: async ({ request, locals }) => {
+		const data = await request.formData();
+		const recipientId = data.get('recipientId')?.toString();
+		const comments = data.get('comments')?.toString() || undefined;
+
+		if (!recipientId) {
+			return fail(400, { error: 'Missing recipient ID' });
+		}
+
+		const recipient = await getSharedBigRockRecipient(recipientId);
+		if (!recipient || recipient.to_user_id !== locals.user!.uid) {
+			return fail(403, { error: 'Permission denied' });
+		}
+
+		const sharedBigRock = await getSharedBigRockWithObjective(recipient.shared_big_rock_id);
+		if (!sharedBigRock) {
+			return fail(404, { error: 'Shared objective not found' });
+		}
+
+		const objective = await getObjectiveById(sharedBigRock.objective_id);
+		if (!objective) {
+			return fail(404, { error: 'Objective not found' });
+		}
+
+		await approveObjective(objective.id, comments);
+		await updateRecipientAccepted(recipientId, true);
+
+		return { approvedObjective: true };
+	},
+
+	approveAndAdoptAsBigRock: async ({ request, locals }) => {
+		const data = await request.formData();
+		const recipientId = data.get('recipientId')?.toString();
+		const comments = data.get('comments')?.toString() || undefined;
+
+		if (!recipientId) {
+			return fail(400, { error: 'Missing recipient ID' });
+		}
+
+		const recipient = await getSharedBigRockRecipient(recipientId);
+		if (!recipient || recipient.to_user_id !== locals.user!.uid) {
+			return fail(403, { error: 'Permission denied' });
+		}
+
+		const sharedBigRock = await getSharedBigRockWithObjective(recipient.shared_big_rock_id);
+		if (!sharedBigRock) {
+			return fail(404, { error: 'Shared objective not found' });
+		}
+
+		const objective = await getObjectiveById(sharedBigRock.objective_id);
+		if (!objective) {
+			return fail(404, { error: 'Objective not found' });
+		}
+
+		await approveObjective(objective.id, comments);
+		await updateRecipientAccepted(recipientId, true);
+
+		const user = locals.user!;
+		let strategicPriorityId: string | undefined;
+		if (objective.type === 'risk_critical_initiative') {
+			strategicPriorityId = sharedBigRock.parent_strategic_priority_id || undefined;
+		} else {
+			strategicPriorityId = objective.strategic_priority_id || undefined;
+		}
+
+		await createObjective({
+			name: objective.name,
+			type: 'big_rock',
+			description: objective.description || undefined,
+			metric: objective.metric || undefined,
+			strategicPriorityId,
+			ownerUserId: user.uid,
+			receivedFromUserId: sharedBigRock.from_user_id,
+			approved: user.level <= 2
+		});
+
+		return { approvedObjective: true, adopted: true };
+	},
+
+	approveAndAdoptAsRci: async ({ request, locals }) => {
+		const data = await request.formData();
+		const recipientId = data.get('recipientId')?.toString();
+		const comments = data.get('comments')?.toString() || undefined;
+		const parentId = data.get('parentId')?.toString() || undefined;
+
+		if (!recipientId) {
+			return fail(400, { error: 'Missing recipient ID' });
+		}
+
+		const recipient = await getSharedBigRockRecipient(recipientId);
+		if (!recipient || recipient.to_user_id !== locals.user!.uid) {
+			return fail(403, { error: 'Permission denied' });
+		}
+
+		const sharedBigRock = await getSharedBigRockWithObjective(recipient.shared_big_rock_id);
+		if (!sharedBigRock) {
+			return fail(404, { error: 'Shared objective not found' });
+		}
+
+		const objective = await getObjectiveById(sharedBigRock.objective_id);
+		if (!objective) {
+			return fail(404, { error: 'Objective not found' });
+		}
+
+		await approveObjective(objective.id, comments);
+		await updateRecipientAccepted(recipientId, true);
+
+		const user = locals.user!;
+		await createObjective({
+			name: objective.name,
+			type: 'risk_critical_initiative',
+			description: objective.description || undefined,
+			metric: objective.metric || undefined,
+			strategicPriorityId: objective.strategic_priority_id || undefined,
+			parentId,
+			ownerUserId: user.uid,
+			receivedFromUserId: sharedBigRock.from_user_id,
+			approved: user.level <= 2
+		});
+
+		return { approvedObjective: true, adopted: true };
+	},
+
+	reject: async ({ request, locals }) => {
+		const data = await request.formData();
+		const recipientId = data.get('recipientId')?.toString();
+		const comments = data.get('comments')?.toString() || undefined;
+
+		if (!recipientId) {
+			return fail(400, { error: 'Missing recipient ID' });
+		}
+
+		const recipient = await getSharedBigRockRecipient(recipientId);
+		if (!recipient || recipient.to_user_id !== locals.user!.uid) {
+			return fail(403, { error: 'Permission denied' });
+		}
+
+		const sharedBigRock = await getSharedBigRockWithObjective(recipient.shared_big_rock_id);
+		if (!sharedBigRock) {
+			return fail(404, { error: 'Shared objective not found' });
+		}
+
+		await rejectObjective(sharedBigRock.objective_id, comments);
+		await updateRecipientAccepted(recipientId, false);
+
+		return { rejectedObjective: true };
 	}
 };

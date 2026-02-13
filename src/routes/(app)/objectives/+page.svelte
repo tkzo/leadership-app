@@ -13,6 +13,84 @@
 		if (!data.user.manager_id) return sharedWith;
 		return sharedWith.filter(share => share.to_user_id !== data.user.manager_id);
 	}
+
+	// Check if approval has been requested (shared with manager)
+	function isPendingApproval(sharedWith: typeof data.groupedObjectives[0]['bigRock']['sharedWith']) {
+		if (!data.user.manager_id) return false;
+		return sharedWith.some(s => s.to_user_id === data.user.manager_id);
+	}
+
+	// Track which objective's share form is open
+	let shareOpenId: string | null = null;
+
+	function toggleShare(objectiveId: string) {
+		shareOpenId = shareOpenId === objectiveId ? null : objectiveId;
+	}
+
+	// Get same-level users not already shared with for a given objective
+	function getAvailableRecipients(sharedWith: typeof data.groupedObjectives[0]['bigRock']['sharedWith']) {
+		const alreadySharedIds = new Set(sharedWith.map(s => s.to_user_id));
+		return data.sameLevelUsers.filter(u => !alreadySharedIds.has(u.uid));
+	}
+
+	function handleShare() {
+		return ({ formData }: { formData: FormData }) => {
+			return async ({ result, update }: { result: { type: string }; update: () => Promise<void> }) => {
+				shareOpenId = null;
+				await update();
+			};
+		};
+	}
+
+	// Track peer share actions taken (recipientId -> { label, parentName? })
+	let peerActions: Record<string, { label: string; parentName?: string }> = {};
+
+	function handlePeerAction(label: string, captureParent = false) {
+		return ({ formData }: { formData: FormData }) => {
+			const rid = formData.get('recipientId') as string;
+			let parentName: string | undefined;
+			if (captureParent) {
+				const parentId = formData.get('parentId') as string;
+				if (parentId) {
+					const bigRock = data.myBigRocks.find((br) => br.id === parentId);
+					parentName = bigRock?.name;
+				}
+			}
+			return async ({ result, update }: { result: { type: string }; update: () => Promise<void> }) => {
+				if (result.type === 'success') {
+					peerActions[rid] = { label, parentName };
+					peerActions = peerActions;
+				} else {
+					await update();
+				}
+			};
+		};
+	}
+
+	// Track cascaded actions taken (recipientId -> { label, parentName? })
+	let cascadedActions: Record<string, { label: string; parentName?: string }> = {};
+
+	function handleCascadedAction(label: string, captureParent = false) {
+		return ({ formData }: { formData: FormData }) => {
+			const rid = formData.get('recipientId') as string;
+			let parentName: string | undefined;
+			if (captureParent) {
+				const parentId = formData.get('parentId') as string;
+				if (parentId) {
+					const bigRock = data.myBigRocks.find((br) => br.id === parentId);
+					parentName = bigRock?.name;
+				}
+			}
+			return async ({ result, update }: { result: { type: string }; update: () => Promise<void> }) => {
+				if (result.type === 'success') {
+					cascadedActions[rid] = { label, parentName };
+					cascadedActions = cascadedActions;
+				} else {
+					await update();
+				}
+			};
+		};
+	}
 </script>
 
 <svelte:head>
@@ -48,6 +126,10 @@
 	<div class="success">Approval requested for {form.objectiveCount} objective(s) from {data.manager?.name}.</div>
 {/if}
 
+{#if form?.shared}
+	<div class="success">Shared with {form.recipientCount} colleague(s).</div>
+{/if}
+
 {#if data.objectives.length === 0}
 	<div class="empty">
 		<p>You don't have any objectives yet.</p>
@@ -65,6 +147,7 @@
 				<th>Manager Comments</th>
 				<th>Received From</th>
 				<th>Shared With</th>
+				<th></th>
 			</tr>
 		</thead>
 		<tbody>
@@ -97,8 +180,10 @@
 							<span class="badge approved">Approved</span>
 						{:else if group.bigRock.rejected}
 							<span class="badge rejected">Rejected</span>
+						{:else if isPendingApproval(group.bigRock.sharedWith)}
+							<span class="badge pending-approval">Pending Approval</span>
 						{:else}
-							<span class="badge pending">Pending</span>
+							<span class="badge draft">Draft</span>
 						{/if}
 					</td>
 					<td class="comments-cell">
@@ -138,6 +223,49 @@
 							<span class="not-shared">-</span>
 						{/if}
 					</td>
+					<td class="row-actions-cell">
+						<div class="row-actions-icons">
+							{#if getAvailableRecipients(group.bigRock.sharedWith).length > 0}
+								<button type="button" class="icon-btn share-icon-btn" title="Share with colleagues" on:click={() => toggleShare(group.bigRock.id)}>
+									<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<circle cx="18" cy="5" r="3"></circle>
+										<circle cx="6" cy="12" r="3"></circle>
+										<circle cx="18" cy="19" r="3"></circle>
+										<line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+										<line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+									</svg>
+								</button>
+							{/if}
+							{#if group.bigRock.sharedWith.length === 0}
+								<form method="POST" action="?/delete" use:enhance class="delete-form">
+									<input type="hidden" name="objectiveId" value={group.bigRock.id} />
+									<button type="submit" class="icon-btn delete-btn" title="Delete objective">
+										<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+											<polyline points="3 6 5 6 21 6"></polyline>
+											<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+										</svg>
+									</button>
+								</form>
+							{/if}
+						</div>
+						{#if shareOpenId === group.bigRock.id}
+							<form method="POST" action="?/share" use:enhance={handleShare()} class="share-inline-form">
+								<input type="hidden" name="objectiveId" value={group.bigRock.id} />
+								<div class="share-user-list">
+									{#each getAvailableRecipients(group.bigRock.sharedWith) as user}
+										<label class="share-user-label">
+											<input type="checkbox" name="recipientIds" value={user.uid} />
+											<span>{user.name}</span>
+										</label>
+									{/each}
+								</div>
+								<div class="share-inline-actions">
+									<button type="submit" class="share-submit-btn">Share</button>
+									<button type="button" class="share-cancel-btn" on:click={() => shareOpenId = null}>Cancel</button>
+								</div>
+							</form>
+						{/if}
+					</td>
 				</tr>
 				<!-- Child RCI Rows -->
 				{#each group.rcis as rci}
@@ -171,8 +299,10 @@
 								<span class="badge approved">Approved</span>
 							{:else if rci.rejected}
 								<span class="badge rejected">Rejected</span>
+							{:else if isPendingApproval(rci.sharedWith)}
+								<span class="badge pending-approval">Pending Approval</span>
 							{:else}
-								<span class="badge pending">Pending</span>
+								<span class="badge draft">Draft</span>
 							{/if}
 						</td>
 						<td class="comments-cell">
@@ -212,6 +342,49 @@
 								<span class="not-shared">-</span>
 							{/if}
 						</td>
+						<td class="row-actions-cell">
+							<div class="row-actions-icons">
+								{#if getAvailableRecipients(rci.sharedWith).length > 0}
+									<button type="button" class="icon-btn share-icon-btn" title="Share with colleagues" on:click={() => toggleShare(rci.id)}>
+										<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+											<circle cx="18" cy="5" r="3"></circle>
+											<circle cx="6" cy="12" r="3"></circle>
+											<circle cx="18" cy="19" r="3"></circle>
+											<line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+											<line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+										</svg>
+									</button>
+								{/if}
+								{#if rci.sharedWith.length === 0}
+									<form method="POST" action="?/delete" use:enhance class="delete-form">
+										<input type="hidden" name="objectiveId" value={rci.id} />
+										<button type="submit" class="icon-btn delete-btn" title="Delete objective">
+											<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+												<polyline points="3 6 5 6 21 6"></polyline>
+												<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+											</svg>
+										</button>
+									</form>
+								{/if}
+							</div>
+							{#if shareOpenId === rci.id}
+								<form method="POST" action="?/share" use:enhance={handleShare()} class="share-inline-form">
+									<input type="hidden" name="objectiveId" value={rci.id} />
+									<div class="share-user-list">
+										{#each getAvailableRecipients(rci.sharedWith) as user}
+											<label class="share-user-label">
+												<input type="checkbox" name="recipientIds" value={user.uid} />
+												<span>{user.name}</span>
+											</label>
+										{/each}
+									</div>
+									<div class="share-inline-actions">
+										<button type="submit" class="share-submit-btn">Share</button>
+										<button type="button" class="share-cancel-btn" on:click={() => shareOpenId = null}>Cancel</button>
+									</div>
+								</form>
+							{/if}
+						</td>
 					</tr>
 				{/each}
 			{/each}
@@ -236,6 +409,17 @@
 						{#if rci.description}
 							<span class="description">{rci.description}</span>
 						{/if}
+						{#if data.myBigRocks.length > 0}
+							<form method="POST" action="?/assignParent" use:enhance class="assign-parent-form">
+								<input type="hidden" name="objectiveId" value={rci.id} />
+								<select name="parentId" class="assign-parent-select">
+									{#each data.myBigRocks as bigRock}
+										<option value={bigRock.id}>{bigRock.name}</option>
+									{/each}
+								</select>
+								<button type="submit" class="assign-parent-btn">Assign</button>
+							</form>
+						{/if}
 					</td>
 					<td class="priority-cell">-</td>
 					<td class="metric-cell">-</td>
@@ -244,8 +428,10 @@
 							<span class="badge approved">Approved</span>
 						{:else if rci.rejected}
 							<span class="badge rejected">Rejected</span>
+						{:else if isPendingApproval(rci.sharedWith)}
+							<span class="badge pending-approval">Pending Approval</span>
 						{:else}
-							<span class="badge pending">Pending</span>
+							<span class="badge draft">Draft</span>
 						{/if}
 					</td>
 					<td class="comments-cell">
@@ -285,6 +471,223 @@
 							<span class="not-shared">-</span>
 						{/if}
 					</td>
+					<td class="row-actions-cell">
+						<div class="row-actions-icons">
+							{#if getAvailableRecipients(rci.sharedWith).length > 0}
+								<button type="button" class="icon-btn share-icon-btn" title="Share with colleagues" on:click={() => toggleShare(rci.id)}>
+									<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<circle cx="18" cy="5" r="3"></circle>
+										<circle cx="6" cy="12" r="3"></circle>
+										<circle cx="18" cy="19" r="3"></circle>
+										<line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+										<line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+									</svg>
+								</button>
+							{/if}
+							{#if rci.sharedWith.length === 0}
+								<form method="POST" action="?/delete" use:enhance class="delete-form">
+									<input type="hidden" name="objectiveId" value={rci.id} />
+									<button type="submit" class="icon-btn delete-btn" title="Delete objective">
+										<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+											<polyline points="3 6 5 6 21 6"></polyline>
+											<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+										</svg>
+									</button>
+								</form>
+							{/if}
+						</div>
+						{#if shareOpenId === rci.id}
+							<form method="POST" action="?/share" use:enhance={handleShare()} class="share-inline-form">
+								<input type="hidden" name="objectiveId" value={rci.id} />
+								<div class="share-user-list">
+									{#each getAvailableRecipients(rci.sharedWith) as user}
+										<label class="share-user-label">
+											<input type="checkbox" name="recipientIds" value={user.uid} />
+											<span>{user.name}</span>
+										</label>
+									{/each}
+								</div>
+								<div class="share-inline-actions">
+									<button type="submit" class="share-submit-btn">Share</button>
+									<button type="button" class="share-cancel-btn" on:click={() => shareOpenId = null}>Cancel</button>
+								</div>
+							</form>
+						{/if}
+					</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+{/if}
+
+{#if data.groupedPeerShares.length > 0 || data.peerOrphanRcis.length > 0}
+	<h2 class="section-title">Objectives Shared for Alignment by Peers</h2>
+	<table>
+		<thead>
+			<tr>
+				<th>Type</th>
+				<th>Name</th>
+				<th>Strategic Priority</th>
+				<th>Metric</th>
+				<th>Shared By</th>
+				<th>Actions</th>
+			</tr>
+		</thead>
+		<tbody>
+			{#each data.groupedPeerShares as group}
+				<tr class="big-rock-row">
+					<td class="type-cell">
+						<span class="type-badge big-rock">Big Rock</span>
+					</td>
+					<td class="name-cell">
+						<span class="objective-name">{group.bigRock.objective_name}</span>
+						{#if group.bigRock.objective_description}
+							<span class="description">{group.bigRock.objective_description}</span>
+						{/if}
+					</td>
+					<td class="priority-cell">{group.bigRock.strategic_priority_name || '-'}</td>
+					<td class="metric-cell">{group.bigRock.objective_metric || '-'}</td>
+					<td class="from-cell">
+						<span class="from-name">{group.bigRock.from_user_name}</span>
+						{#if group.bigRock.from_user_title}
+							<span class="from-title">{group.bigRock.from_user_title}</span>
+						{/if}
+					</td>
+					<td class="peer-actions-cell">
+						{#if peerActions[group.bigRock.recipient_id] || group.bigRock.action}
+							{@const action = peerActions[group.bigRock.recipient_id] || group.bigRock.action}
+							<span class="action-taken">{action.label}</span>
+							{#if action.parentName}
+								<span class="action-parent">Under {action.parentName}</span>
+							{/if}
+						{:else}
+							<form method="POST" action="?/acceptPeerAsBigRock" use:enhance={handlePeerAction('Accepted As Big Rock')} class="inline-form">
+								<input type="hidden" name="recipientId" value={group.bigRock.recipient_id} />
+								<button type="submit" class="adopt-br-btn">Accept as Big Rock</button>
+							</form>
+							<form method="POST" action="?/acceptPeerAsRci" use:enhance={handlePeerAction('Accepted As RCI', true)} class="peer-rci-form">
+								<input type="hidden" name="recipientId" value={group.bigRock.recipient_id} />
+								{#if data.myBigRocks.length > 0}
+									<select name="parentId" class="peer-parent-select">
+										<option value="">No parent</option>
+										{#each data.myBigRocks as bigRock}
+											<option value={bigRock.id}>{bigRock.name}</option>
+										{/each}
+									</select>
+								{/if}
+								<button type="submit" class="adopt-rci-btn">Accept as RCI</button>
+							</form>
+							<form method="POST" action="?/ignorePeer" use:enhance={handlePeerAction('Ignored')} class="inline-form">
+								<input type="hidden" name="recipientId" value={group.bigRock.recipient_id} />
+								<button type="submit" class="ignore-btn">Ignore</button>
+							</form>
+						{/if}
+					</td>
+				</tr>
+				{#each group.rcis as rci}
+					<tr class="rci-row child-row">
+						<td class="type-cell">
+							<span class="type-badge rci">RCI</span>
+						</td>
+						<td class="name-cell indented">
+							<span class="indent-marker"></span>
+							<div>
+								<span class="objective-name">{rci.objective_name}</span>
+								{#if rci.objective_description}
+									<span class="description">{rci.objective_description}</span>
+								{/if}
+							</div>
+						</td>
+						<td class="priority-cell">-</td>
+						<td class="metric-cell">{rci.objective_metric || '-'}</td>
+						<td class="from-cell">
+							<span class="from-name">{rci.from_user_name}</span>
+							{#if rci.from_user_title}
+								<span class="from-title">{rci.from_user_title}</span>
+							{/if}
+						</td>
+						<td class="peer-actions-cell">
+							{#if peerActions[rci.recipient_id] || rci.action}
+								{@const action = peerActions[rci.recipient_id] || rci.action}
+								<span class="action-taken">{action.label}</span>
+								{#if action.parentName}
+									<span class="action-parent">Under {action.parentName}</span>
+								{/if}
+							{:else}
+								<form method="POST" action="?/acceptPeerAsBigRock" use:enhance={handlePeerAction('Accepted As Big Rock')} class="inline-form">
+									<input type="hidden" name="recipientId" value={rci.recipient_id} />
+									<button type="submit" class="adopt-br-btn">Accept as Big Rock</button>
+								</form>
+								<form method="POST" action="?/acceptPeerAsRci" use:enhance={handlePeerAction('Accepted As RCI', true)} class="peer-rci-form">
+									<input type="hidden" name="recipientId" value={rci.recipient_id} />
+									{#if data.myBigRocks.length > 0}
+										<select name="parentId" class="peer-parent-select">
+											<option value="">No parent</option>
+											{#each data.myBigRocks as bigRock}
+												<option value={bigRock.id}>{bigRock.name}</option>
+											{/each}
+										</select>
+									{/if}
+									<button type="submit" class="adopt-rci-btn">Accept as RCI</button>
+								</form>
+								<form method="POST" action="?/ignorePeer" use:enhance={handlePeerAction('Ignored')} class="inline-form">
+									<input type="hidden" name="recipientId" value={rci.recipient_id} />
+									<button type="submit" class="ignore-btn">Ignore</button>
+								</form>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			{/each}
+			{#each data.peerOrphanRcis as rci}
+				<tr class="rci-row">
+					<td class="type-cell">
+						<span class="type-badge rci">RCI</span>
+					</td>
+					<td class="name-cell">
+						<span class="objective-name">{rci.objective_name}</span>
+						{#if rci.objective_description}
+							<span class="description">{rci.objective_description}</span>
+						{/if}
+					</td>
+					<td class="priority-cell">-</td>
+					<td class="metric-cell">{rci.objective_metric || '-'}</td>
+					<td class="from-cell">
+						<span class="from-name">{rci.from_user_name}</span>
+						{#if rci.from_user_title}
+							<span class="from-title">{rci.from_user_title}</span>
+						{/if}
+					</td>
+					<td class="peer-actions-cell">
+						{#if peerActions[rci.recipient_id] || rci.action}
+							{@const action = peerActions[rci.recipient_id] || rci.action}
+							<span class="action-taken">{action.label}</span>
+							{#if action.parentName}
+								<span class="action-parent">Under {action.parentName}</span>
+							{/if}
+						{:else}
+							<form method="POST" action="?/acceptPeerAsBigRock" use:enhance={handlePeerAction('Accepted As Big Rock')} class="inline-form">
+								<input type="hidden" name="recipientId" value={rci.recipient_id} />
+								<button type="submit" class="adopt-br-btn">Accept as Big Rock</button>
+							</form>
+							<form method="POST" action="?/acceptPeerAsRci" use:enhance={handlePeerAction('Accepted As RCI', true)} class="peer-rci-form">
+								<input type="hidden" name="recipientId" value={rci.recipient_id} />
+								{#if data.myBigRocks.length > 0}
+									<select name="parentId" class="peer-parent-select">
+										<option value="">No parent</option>
+										{#each data.myBigRocks as bigRock}
+											<option value={bigRock.id}>{bigRock.name}</option>
+										{/each}
+									</select>
+								{/if}
+								<button type="submit" class="adopt-rci-btn">Accept as RCI</button>
+							</form>
+							<form method="POST" action="?/ignorePeer" use:enhance={handlePeerAction('Ignored')} class="inline-form">
+								<input type="hidden" name="recipientId" value={rci.recipient_id} />
+								<button type="submit" class="ignore-btn">Ignore</button>
+							</form>
+						{/if}
+					</td>
 				</tr>
 			{/each}
 		</tbody>
@@ -302,6 +705,7 @@
 				<th>Strategic Priority</th>
 				<th>Metric</th>
 				<th>From</th>
+				<th>Actions</th>
 			</tr>
 		</thead>
 		<tbody>
@@ -323,6 +727,36 @@
 						<span class="from-name">{group.bigRock.from_user_name}</span>
 						{#if group.bigRock.from_user_title}
 							<span class="from-title">{group.bigRock.from_user_title}</span>
+						{/if}
+					</td>
+					<td class="cascaded-actions-cell">
+						{#if cascadedActions[group.bigRock.recipient_id] || group.bigRock.action}
+							{@const action = cascadedActions[group.bigRock.recipient_id] || group.bigRock.action}
+							<span class="action-taken">{action.label}</span>
+							{#if action.parentName}
+								<span class="action-parent">Under {action.parentName}</span>
+							{/if}
+						{:else}
+							<form method="POST" action="?/adoptAsBigRock" use:enhance={handleCascadedAction('Adopted As Big Rock')} class="inline-form">
+								<input type="hidden" name="recipientId" value={group.bigRock.recipient_id} />
+								<button type="submit" class="adopt-br-btn">Adopt as Big Rock</button>
+							</form>
+							<form method="POST" action="?/adoptAsRci" use:enhance={handleCascadedAction('Adopted As RCI', true)} class="rci-form">
+								<input type="hidden" name="recipientId" value={group.bigRock.recipient_id} />
+								{#if data.myBigRocks.length > 0}
+									<select name="parentId">
+										<option value="">No parent</option>
+										{#each data.myBigRocks as bigRock}
+											<option value={bigRock.id}>{bigRock.name}</option>
+										{/each}
+									</select>
+								{/if}
+								<button type="submit" class="adopt-rci-btn">Adopt as RCI</button>
+							</form>
+							<form method="POST" action="?/ignoreCascaded" use:enhance={handleCascadedAction('Ignored')} class="inline-form">
+								<input type="hidden" name="recipientId" value={group.bigRock.recipient_id} />
+								<button type="submit" class="ignore-btn">Ignore</button>
+							</form>
 						{/if}
 					</td>
 				</tr>
@@ -349,6 +783,36 @@
 								<span class="from-title">{rci.from_user_title}</span>
 							{/if}
 						</td>
+						<td class="cascaded-actions-cell">
+							{#if cascadedActions[rci.recipient_id] || rci.action}
+								{@const action = cascadedActions[rci.recipient_id] || rci.action}
+								<span class="action-taken">{action.label}</span>
+								{#if action.parentName}
+									<span class="action-parent">Under {action.parentName}</span>
+								{/if}
+							{:else}
+								<form method="POST" action="?/adoptAsBigRock" use:enhance={handleCascadedAction('Adopted As Big Rock')} class="inline-form">
+									<input type="hidden" name="recipientId" value={rci.recipient_id} />
+									<button type="submit" class="adopt-br-btn">Adopt as Big Rock</button>
+								</form>
+								<form method="POST" action="?/adoptAsRci" use:enhance={handleCascadedAction('Adopted As RCI', true)} class="rci-form">
+									<input type="hidden" name="recipientId" value={rci.recipient_id} />
+									{#if data.myBigRocks.length > 0}
+										<select name="parentId">
+											<option value="">No parent</option>
+											{#each data.myBigRocks as bigRock}
+												<option value={bigRock.id}>{bigRock.name}</option>
+											{/each}
+										</select>
+									{/if}
+									<button type="submit" class="adopt-rci-btn">Adopt as RCI</button>
+								</form>
+								<form method="POST" action="?/ignoreCascaded" use:enhance={handleCascadedAction('Ignored')} class="inline-form">
+									<input type="hidden" name="recipientId" value={rci.recipient_id} />
+									<button type="submit" class="ignore-btn">Ignore</button>
+								</form>
+							{/if}
+						</td>
 					</tr>
 				{/each}
 			{/each}
@@ -370,6 +834,36 @@
 						<span class="from-name">{rci.from_user_name}</span>
 						{#if rci.from_user_title}
 							<span class="from-title">{rci.from_user_title}</span>
+						{/if}
+					</td>
+					<td class="cascaded-actions-cell">
+						{#if cascadedActions[rci.recipient_id] || rci.action}
+							{@const action = cascadedActions[rci.recipient_id] || rci.action}
+							<span class="action-taken">{action.label}</span>
+							{#if action.parentName}
+								<span class="action-parent">Under {action.parentName}</span>
+							{/if}
+						{:else}
+							<form method="POST" action="?/adoptAsBigRock" use:enhance={handleCascadedAction('Adopted As Big Rock')} class="inline-form">
+								<input type="hidden" name="recipientId" value={rci.recipient_id} />
+								<button type="submit" class="adopt-br-btn">Adopt as Big Rock</button>
+							</form>
+							<form method="POST" action="?/adoptAsRci" use:enhance={handleCascadedAction('Adopted As RCI', true)} class="rci-form">
+								<input type="hidden" name="recipientId" value={rci.recipient_id} />
+								{#if data.myBigRocks.length > 0}
+									<select name="parentId">
+										<option value="">No parent</option>
+										{#each data.myBigRocks as bigRock}
+											<option value={bigRock.id}>{bigRock.name}</option>
+										{/each}
+									</select>
+								{/if}
+								<button type="submit" class="adopt-rci-btn">Adopt as RCI</button>
+							</form>
+							<form method="POST" action="?/ignoreCascaded" use:enhance={handleCascadedAction('Ignored')} class="inline-form">
+								<input type="hidden" name="recipientId" value={rci.recipient_id} />
+								<button type="submit" class="ignore-btn">Ignore</button>
+							</form>
 						{/if}
 					</td>
 				</tr>
@@ -656,9 +1150,14 @@
 		color: #1e7e34;
 	}
 
-	.badge.pending {
+	.badge.draft {
 		background: #fff3cd;
 		color: #856404;
+	}
+
+	.badge.pending-approval {
+		background: #e2e3e5;
+		color: #383d41;
 	}
 
 	.badge.accepted {
@@ -724,5 +1223,243 @@
 	.from-title {
 		font-size: 0.75rem;
 		color: #666;
+	}
+
+	.cascaded-actions-cell {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		min-width: 200px;
+	}
+
+	.inline-form {
+		display: inline;
+	}
+
+	.rci-form {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.rci-form select {
+		padding: 0.375rem 0.5rem;
+		border: 1px solid #ccc;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		max-width: 150px;
+	}
+
+	.adopt-br-btn {
+		padding: 0.375rem 0.75rem;
+		background: #0066cc;
+		color: white;
+		border: none;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.adopt-br-btn:hover {
+		background: #0052a3;
+	}
+
+	.adopt-rci-btn {
+		padding: 0.375rem 0.75rem;
+		background: #28a745;
+		color: white;
+		border: none;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.adopt-rci-btn:hover {
+		background: #218838;
+	}
+
+	.ignore-btn {
+		padding: 0.375rem 0.75rem;
+		background: #f5f5f5;
+		color: #666;
+		border: none;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.ignore-btn:hover {
+		background: #e5e5e5;
+	}
+
+	.row-actions-cell {
+		width: 60px;
+		vertical-align: top;
+	}
+
+	.row-actions-icons {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
+	.delete-form {
+		margin: 0;
+		display: inline;
+	}
+
+	.icon-btn {
+		background: none;
+		border: none;
+		padding: 0.25rem;
+		cursor: pointer;
+		color: #999;
+		display: inline-flex;
+		align-items: center;
+		border-radius: 4px;
+	}
+
+	.delete-btn:hover {
+		color: #dc3545;
+		background: #fee;
+	}
+
+	.share-icon-btn:hover {
+		color: #0066cc;
+		background: #e3f2fd;
+	}
+
+	.share-inline-form {
+		margin-top: 0.5rem;
+		background: #f9f9f9;
+		border: 1px solid #ddd;
+		border-radius: 6px;
+		padding: 0.5rem;
+	}
+
+	.share-user-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.share-user-label {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		font-size: 0.75rem;
+		font-weight: normal;
+		cursor: pointer;
+	}
+
+	.share-user-label input[type="checkbox"] {
+		width: auto;
+	}
+
+	.share-inline-actions {
+		display: flex;
+		gap: 0.375rem;
+	}
+
+	.share-submit-btn {
+		padding: 0.25rem 0.5rem;
+		background: #0066cc;
+		color: white;
+		border: none;
+		border-radius: 4px;
+		font-size: 0.7rem;
+		cursor: pointer;
+	}
+
+	.share-submit-btn:hover {
+		background: #0052a3;
+	}
+
+	.share-cancel-btn {
+		padding: 0.25rem 0.5rem;
+		background: #f5f5f5;
+		color: #666;
+		border: none;
+		border-radius: 4px;
+		font-size: 0.7rem;
+		cursor: pointer;
+	}
+
+	.share-cancel-btn:hover {
+		background: #e5e5e5;
+	}
+
+	.assign-parent-form {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		margin-top: 0.5rem;
+	}
+
+	.assign-parent-select {
+		padding: 0.25rem 0.375rem;
+		border: 1px solid #ccc;
+		border-radius: 4px;
+		font-size: 0.7rem;
+		max-width: 150px;
+	}
+
+	.assign-parent-btn {
+		padding: 0.25rem 0.5rem;
+		background: #6f42c1;
+		color: white;
+		border: none;
+		border-radius: 4px;
+		font-size: 0.7rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.assign-parent-btn:hover {
+		background: #5a32a3;
+	}
+
+	.action-taken {
+		display: inline-block;
+		padding: 0.25rem 0.5rem;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		font-weight: 500;
+		background: #e6f4ea;
+		color: #1e7e34;
+	}
+
+	.action-parent {
+		display: block;
+		font-size: 0.7rem;
+		color: #666;
+		margin-top: 0.125rem;
+	}
+
+	.peer-actions-cell {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		min-width: 200px;
+	}
+
+	.peer-rci-form {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.peer-parent-select {
+		padding: 0.375rem 0.5rem;
+		border: 1px solid #ccc;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		max-width: 150px;
 	}
 </style>

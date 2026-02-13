@@ -75,6 +75,54 @@ export async function getIncomingSharedBigRocks(userId: string): Promise<
 	);
 }
 
+export async function getAllIncomingSharedBigRocks(userId: string): Promise<
+	Array<{
+		recipient_id: string;
+		shared_big_rock_id: string;
+		accepted: boolean | null;
+		objective_id: string;
+		objective_name: string;
+		objective_type: 'big_rock' | 'risk_critical_initiative';
+		objective_description: string | null;
+		objective_metric: string | null;
+		objective_parent_id: string | null;
+		parent_objective_name: string | null;
+		strategic_priority_name: string | null;
+		from_user_id: string;
+		from_user_name: string;
+		from_user_title: string | null;
+		shared_at: Date;
+	}>
+> {
+	return query(
+		`SELECT
+			sbr.id as recipient_id,
+			sbr.shared_big_rock_id,
+			sbr.accepted,
+			sb.objective_id,
+			o.name as objective_name,
+			o.type as objective_type,
+			o.description as objective_description,
+			o.metric as objective_metric,
+			o.parent_id as objective_parent_id,
+			parent.name as parent_objective_name,
+			sp.name as strategic_priority_name,
+			sb.from_user_id,
+			u.name as from_user_name,
+			u.title as from_user_title,
+			sb.created_at as shared_at
+		 FROM shared_big_rock_recipients sbr
+		 JOIN shared_big_rocks sb ON sbr.shared_big_rock_id = sb.id
+		 JOIN objectives o ON sb.objective_id = o.id
+		 JOIN users u ON sb.from_user_id = u.uid
+		 LEFT JOIN strategic_priorities sp ON o.strategic_priority_id = sp.id
+		 LEFT JOIN objectives parent ON o.parent_id = parent.id
+		 WHERE sbr.to_user_id = $1
+		 ORDER BY o.type DESC, parent.name NULLS FIRST, o.name`,
+		[userId]
+	);
+}
+
 export async function getIncomingSharesFromManager(userId: string, managerId: string): Promise<
 	Array<{
 		recipient_id: string;
