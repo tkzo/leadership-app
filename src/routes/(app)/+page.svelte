@@ -8,7 +8,7 @@
 	<title>Dashboard - Leadership App</title>
 </svelte:head>
 
-<h1>Dashboard</h1>
+<h1>Hi, {data.user.name}</h1>
 
 <div class="stats-grid">
 	<div class="stat-card">
